@@ -53,6 +53,8 @@
 #include <libsais.h>
 #include <libsais64.h>
 
+#include "internal/hll_sketch.hpp"
+
 namespace alz {
 
 template<std::unsigned_integral Index>
@@ -72,6 +74,7 @@ private:
     using RK64 = fp::RabinKarp61;
     using Fingerprint = RK::Fingerprint;
     using Fingerprint64 = RK64::Fingerprint;
+    using HLLSketch = internal::HLLSketch<16>;
 
     using MIndex = uint32_t; // nb: we generally assume that we won't ever have more than 4G metacharacters...
     using MLength = uint32_t;
@@ -197,6 +200,12 @@ private:
                 block = iopp::OverlappingBlocks(in, block_size, fp_window_);
             }
 
+            // sketch
+            std::unique_ptr<HLLSketch> psketch[num_threads];
+            for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
+                psketch[thread_num] = std::make_unique<HLLSketch>();
+            }
+
             // when the last thread reaches the end of a block (not the last) and has not yet found a trigger string,
             // it leaves this delta for the first thread processing the next block
             Index prev_block_delta;
@@ -214,6 +223,8 @@ private:
                 #pragma omp parallel
                 {
                     Index const thread_num = omp_get_thread_num();
+
+                    auto& local_sketch = *psketch[thread_num];
 
                     auto& local_pre_parsing = *pre_parsing[pre_parsing_offs + thread_num];
                     local_pre_parsing.reserve(size_t(1.2 * double(has_text_access ? n : block.size()) / double(s * num_threads))); // exaggerate a little bit to account for standard deviation
@@ -269,6 +280,7 @@ private:
                                 skip_first = false;
                             } else {
                                 local_pre_parsing.push_back(Metachar{ Index(block.offset() + (last - t_beg)), MLength(p - last), fp_meta });
+                                local_sketch.push(fp_meta);
                             }
 
                             last = p - fp_window_;
@@ -312,10 +324,21 @@ private:
                 pre_parsing_length += pre_parsing[i]->size();
             }
 
+            size_t distinct_estimate;
+            {
+                HLLSketch sketch;
+                for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
+                    sketch.merge(*psketch[thread_num]);
+                    psketch[thread_num].reset();
+                }
+                distinct_estimate = size_t(sketch.estimate());
+            }
+
             if constexpr(verbose_) {
                 phase.stop();
                 std::cout << "(" << (size_t)phase.get_metric<pm::Stopwatch::ElapsedTimeMillisMetric>() << "ms, peak mem " << phase.get_metric<pm::MallocCounter::MemoryPeakMetric>() << ")" << std::endl;
                 std::cout << "\tpreliminary parsing length: " << pre_parsing_length << std::endl;
+                std::cout << "\tdistinct metacharacters estimate: " << distinct_estimate << std::endl;
             }
 
             if constexpr(verbose_) {
