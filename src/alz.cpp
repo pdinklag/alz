@@ -72,7 +72,7 @@ private:
     template<typename Factorizer>
     void factorize_vbyte(Factorizer& factorizer, size_t const n, lz77::EmitFunction emit_literal, lz77::EmitFunction emit_copy) {
         if(window > 0) {
-            iopp::FileInputStream in(filename);
+            iopp::FileInputStream in(filename, 0, n);
             factorizer.factorize(in, n, window, emit_literal, emit_copy);
         } else {
             auto s = load_input(n);
