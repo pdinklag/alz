@@ -37,20 +37,17 @@
 #include <cmath>
 #include <limits>
 
+#include "murmur_hash3.hpp"
+
 namespace alz::internal {
-template<uint8_t b_ = 6, std::unsigned_integral Hash = uint64_t> // 2^b = number of registers
+template<uint8_t b_ = 6> // 2^b = number of registers
 class HLLSketch {
 private:
-    static constexpr size_t hash_bits_ = std::numeric_limits<Hash>::digits;
-
-    using Register = Hash; // nb: we could potentially use less bits if b_ >= hash_bits_/2, but for 64-bit hashes, that is impractical
+    using Hash = uint64_t;
+    using Register = Hash; // nb: we could potentially use less bits if b_ >= bitsizeof(Hash)/2, but for 64-bit hashes, that is impractical
 
     static constexpr size_t num_registers_ = 1ULL << b_;
     static constexpr Hash reg_mask_ = num_registers_ - 1;
-
-    static constexpr size_t rho(Hash const x) {
-        return std::countl_zero(x) + 1;
-    }
 
     static constexpr double alpha() {
         if constexpr(num_registers_ == 16) {
@@ -73,11 +70,13 @@ public:
         }
     }
 
-    void push(Hash const h) {
+    template<typename Value>
+    void push(Value const v) {
+        Hash h = MurmurHash3()(v);
         size_t const i = h & reg_mask_;
-        size_t const r = rho(h);
-        if(r > reg_[i]) {
-            reg_[i] = r;
+        size_t const rho = std::countl_zero(h) + 1;
+        if(rho > reg_[i]) {
+            reg_[i] = rho;
         }
     }
 
