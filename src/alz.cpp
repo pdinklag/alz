@@ -48,7 +48,7 @@ private:
     size_t prefix = SIZE_MAX;
 
     uint64_t sampling = 4;
-    uint64_t fp_window = 16;
+    uint64_t fp_window = 10;
     uint64_t window = 0;
 
     bool flag_collapse_gaps = false;
