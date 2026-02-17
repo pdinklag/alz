@@ -74,7 +74,7 @@ private:
     using RK64 = fp::RabinKarp61;
     using Fingerprint = RK::Fingerprint;
     using Fingerprint64 = RK64::Fingerprint;
-    using HLLSketch = internal::HLLSketch<6>;
+    using HLLSketch = internal::HLLSketch<16>;
 
     using MIndex = uint32_t; // nb: we generally assume that we won't ever have more than 4G metacharacters...
     using MLength = uint32_t;
