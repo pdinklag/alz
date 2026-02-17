@@ -161,6 +161,191 @@ private:
     size_t sampling_;
     size_t fp_window_;
 
+    using PreParsing = std::vector<std::unique_ptr<std::vector<Metachar>>>;
+
+    template<typename InputStream, bool has_text_access, bool store>
+    std::pair<size_t, size_t> pre_parse(InputStream& in, size_t const block_size, std::string_view const& t, size_t const n, PreParsing* ppre_parsing) {
+        auto const num_threads = omp_get_max_threads();
+        size_t const s = (1ULL << sampling_) - 1;
+
+        auto& pre_parsing = *ppre_parsing;         // used only if store == true
+        size_t pre_parsing_size[num_threads] = {}; // used only if store == false
+
+        RK rk_trigger(rolling_fp_base_, fp_window_);
+        RK64 rk_meta(rolling_fp_base_);
+
+        auto push_trigger = [&](Fingerprint& fp, char const* p){ fp = rk_trigger.push(fp, *p); };
+        auto roll_trigger = [&](Fingerprint& fp, char const* p){ fp = rk_trigger.roll(fp, *(p-fp_window_), *p); };
+        auto push_meta = [&](Fingerprint64& fp, char const* p){ fp = rk_meta.push(fp, *p); };
+
+        iopp::OverlappingBlocks<InputStream> block;
+        bool done;
+        if constexpr(has_text_access) {
+            // we only scan one "block" - the whole input
+            done = true;
+        } else {
+            // we will process the input blockwise
+            block = iopp::OverlappingBlocks(in, block_size, fp_window_);
+        }
+
+        // sketch
+        std::unique_ptr<HLLSketch> psketch[num_threads];
+        for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
+            psketch[thread_num] = std::make_unique<HLLSketch>();
+        }
+
+        // when the last thread reaches the end of a block (not the last) and has not yet found a trigger string,
+        // it leaves this delta for the first thread processing the next block
+        Index prev_block_delta;
+        Fingerprint64 prev_block_fp;
+        Index block_num = 0;
+        do {
+            size_t const pre_parsing_offs = store ? pre_parsing.size() : 0;
+            Index const num_per_thread = idiv_ceil(has_text_access ? n : block.size(), num_threads);
+
+            // add p partial parsings for each block
+            if constexpr(store) {
+                for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
+                    pre_parsing.emplace_back(std::make_unique<std::vector<Metachar>>());
+                }
+            }
+
+            #pragma omp parallel
+            {
+                Index const thread_num = omp_get_thread_num();
+
+                auto& local_sketch = *psketch[thread_num];
+
+                auto* local_pre_parsing = store ? pre_parsing[pre_parsing_offs + thread_num].get() : nullptr;
+                if constexpr(store) {
+                    local_pre_parsing->reserve(size_t(1.2 * double(has_text_access ? n : block.size()) / double(s * num_threads))); // exaggerate a little bit to account for standard deviation
+                }
+
+                char const* t_beg, *t_end;
+                if constexpr(has_text_access) {
+                    t_beg = t.data();
+                    t_end = t_beg + n;
+                } else {
+                    t_beg = block.begin();
+                    t_end = block.end();
+                }
+
+                char const* beg = t_beg + thread_num * num_per_thread;
+                char const* end = std::min(beg + num_per_thread, t_end);
+
+                Fingerprint fp_trigger = 0;
+                Fingerprint64 fp_meta = 0;
+
+                // the previous thread will scan beyond its boundaries until it hits a trigger string, so we'll ignore the first one we find
+                // -- unless we are the first thread :-)
+                bool skip_first = thread_num > 0;
+
+                // consider previous characters for consistent triggering
+                // (when scanning blockwise, the first thread must do this too unless this is the first block)
+                if(thread_num > 0 || !block.first()) {
+                    for(char const* p = beg - fp_window_; p < beg; p++) {
+                        push_trigger(fp_trigger, p);
+                    }
+                }
+
+                char const* p = beg;
+                char const* last = beg - fp_window_;
+
+                if(thread_num == 0) {
+                    if(block.first()) {
+                        // the first thread must fingerprint the initial window if this is the first block
+                        last = beg;
+                        for(; p < end && p < beg + fp_window_; p++) {
+                            push_trigger(fp_trigger, p);
+                            push_meta(fp_meta, p);
+                        }
+                    } else {
+                        // if this is not the first block, the first thread must use whatever memo the last thread left from the previous block
+                        last = beg - prev_block_delta;
+                        fp_meta = prev_block_fp;
+                    }
+                }
+
+                size_t local_count = 0;
+                for(; last + fp_window_ < end && p < t_end; p++) {
+                    if((fp_trigger & s) == 0) {
+                        if(skip_first)[[unlikely]] {
+                            skip_first = false;
+                        } else {
+                            if constexpr(store) {
+                                local_pre_parsing->push_back(Metachar{ Index(block.offset() + (last - t_beg)), MLength(p - last), fp_meta });
+                            } else {
+                                ++local_count;
+                            }
+                            local_sketch.push(fp_meta);
+                        }
+
+                        last = p - fp_window_;
+
+                        fp_meta = 0;
+                        for(char const* q = p - fp_window_; q < p; q++) {
+                            push_meta(fp_meta, q);
+                        }
+                    }
+
+                    roll_trigger(fp_trigger, p);
+                    push_meta(fp_meta, p);
+                }
+
+                // nb: this prevents prev_block information to be written by the last thread before the first thread read it, which actually happens for small windows!
+                #pragma omp barrier
+
+                // the last thread must either introduce the final metacharacter, or leave information for the first thread regarding the next block
+                if(thread_num == num_threads - 1 && last < t_end) {
+                    if(block.last()) {
+                        // we are in the last block -- introduce final metacharacter
+                        // nb: this is safe if not scanning blockwise; block.last() will then always return true
+                        if constexpr(store) {
+                            local_pre_parsing->push_back(Metachar{ Index(block.offset() + (last - t_beg)), MLength(t_end - last), fp_meta });
+                        } else {
+                            ++local_count;
+                        }
+                    } else {
+                        // leave a memo for the first thread processing the next block
+                        prev_block_delta = t_end - last;
+                        prev_block_fp = fp_meta;
+                    }
+                }
+
+                pre_parsing_size[thread_num] += local_count;
+            }
+
+            if constexpr(!has_text_access) {
+                // advance to next block
+                done = !block.advance();
+            }
+            ++block_num;
+        } while(!done);
+
+        size_t pre_parsing_length = 0;
+        if constexpr(store) {
+            for(size_t i = 0; i < pre_parsing.size(); i++) {
+                pre_parsing_length += pre_parsing[i]->size();
+            }
+        } else {
+            for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
+                pre_parsing_length += pre_parsing_size[thread_num];
+            }
+        }
+
+        size_t distinct_estimate;
+        {
+            HLLSketch sketch;
+            for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
+                sketch.merge(*psketch[thread_num]);
+                psketch[thread_num].reset();
+            }
+            distinct_estimate = size_t(sketch.estimate());
+        }
+
+        return std::make_pair(pre_parsing_length, distinct_estimate);
+    }
+
     template<typename InputStream, bool has_text_access>
     void factorize(InputStream& in, size_t const block_size, std::string_view const& t, size_t const n, lz77::EmitFunction emit_literal, lz77::EmitFunction emit_copy) {
         auto const num_threads = omp_get_max_threads();
@@ -181,158 +366,8 @@ private:
                 phase.start();
             }
 
-            RK rk_trigger(rolling_fp_base_, fp_window_);
-            RK64 rk_meta(rolling_fp_base_);
-
-            auto push_trigger = [&](Fingerprint& fp, char const* p){ fp = rk_trigger.push(fp, *p); };
-            auto roll_trigger = [&](Fingerprint& fp, char const* p){ fp = rk_trigger.roll(fp, *(p-fp_window_), *p); };
-            auto push_meta = [&](Fingerprint64& fp, char const* p){ fp = rk_meta.push(fp, *p); };
-
-            std::vector<std::unique_ptr<std::vector<Metachar>>> pre_parsing;
-
-            iopp::OverlappingBlocks<InputStream> block;
-            bool done;
-            if constexpr(has_text_access) {
-                // we only scan one "block" - the whole input
-                done = true;
-            } else {
-                // we will process the input blockwise
-                block = iopp::OverlappingBlocks(in, block_size, fp_window_);
-            }
-
-            // sketch
-            std::unique_ptr<HLLSketch> psketch[num_threads];
-            for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
-                psketch[thread_num] = std::make_unique<HLLSketch>();
-            }
-
-            // when the last thread reaches the end of a block (not the last) and has not yet found a trigger string,
-            // it leaves this delta for the first thread processing the next block
-            Index prev_block_delta;
-            Fingerprint64 prev_block_fp;
-            Index block_num = 0;
-            do {
-                size_t const pre_parsing_offs = pre_parsing.size();
-                Index const num_per_thread = idiv_ceil(has_text_access ? n : block.size(), num_threads);
-
-                // add p partial parsings for each block
-                for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
-                    pre_parsing.emplace_back(std::make_unique<std::vector<Metachar>>());
-                }
-
-                #pragma omp parallel
-                {
-                    Index const thread_num = omp_get_thread_num();
-
-                    auto& local_sketch = *psketch[thread_num];
-
-                    auto& local_pre_parsing = *pre_parsing[pre_parsing_offs + thread_num];
-                    local_pre_parsing.reserve(size_t(1.2 * double(has_text_access ? n : block.size()) / double(s * num_threads))); // exaggerate a little bit to account for standard deviation
-
-                    char const* t_beg, *t_end;
-                    if constexpr(has_text_access) {
-                        t_beg = t.data();
-                        t_end = t_beg + n;
-                    } else {
-                        t_beg = block.begin();
-                        t_end = block.end();
-                    }
-
-                    char const* beg = t_beg + thread_num * num_per_thread;
-                    char const* end = std::min(beg + num_per_thread, t_end);
-
-                    Fingerprint fp_trigger = 0;
-                    Fingerprint64 fp_meta = 0;
-
-                    // the previous thread will scan beyond its boundaries until it hits a trigger string, so we'll ignore the first one we find
-                    // -- unless we are the first thread :-)
-                    bool skip_first = thread_num > 0;
-
-                    // consider previous characters for consistent triggering
-                    // (when scanning blockwise, the first thread must do this too unless this is the first block)
-                    if(thread_num > 0 || !block.first()) {
-                        for(char const* p = beg - fp_window_; p < beg; p++) {
-                            push_trigger(fp_trigger, p);
-                        }
-                    }
-
-                    char const* p = beg;
-                    char const* last = beg - fp_window_;
-
-                    if(thread_num == 0) {
-                        if(block.first()) {
-                            // the first thread must fingerprint the initial window if this is the first block
-                            last = beg;
-                            for(; p < end && p < beg + fp_window_; p++) {
-                                push_trigger(fp_trigger, p);
-                                push_meta(fp_meta, p);
-                            }
-                        } else {
-                            // if this is not the first block, the first thread must use whatever memo the last thread left from the previous block
-                            last = beg - prev_block_delta;
-                            fp_meta = prev_block_fp;
-                        }
-                    }
-
-                    for(; last + fp_window_ < end && p < t_end; p++) {
-                        if((fp_trigger & s) == 0) {
-                            if(skip_first)[[unlikely]] {
-                                skip_first = false;
-                            } else {
-                                local_pre_parsing.push_back(Metachar{ Index(block.offset() + (last - t_beg)), MLength(p - last), fp_meta });
-                                local_sketch.push(fp_meta);
-                            }
-
-                            last = p - fp_window_;
-
-                            fp_meta = 0;
-                            for(char const* q = p - fp_window_; q < p; q++) {
-                                push_meta(fp_meta, q);
-                            }
-                        }
-
-                        roll_trigger(fp_trigger, p);
-                        push_meta(fp_meta, p);
-                    }
-
-                    // nb: this prevents prev_block information to be written by the last thread before the first thread read it, which actually happens for small windows!
-                    #pragma omp barrier
-
-                    // the last thread must either introduce the final metacharacter, or leave information for the first thread regarding the next block
-                    if(thread_num == num_threads - 1 && last < t_end) {
-                        if(block.last()) {
-                            // we are in the last block -- introduce final metacharacter
-                            // nb: this is safe if not scanning blockwise; block.last() will then always return true
-                            local_pre_parsing.push_back(Metachar{ Index(block.offset() + (last - t_beg)), MLength(t_end - last), fp_meta });
-                        } else {
-                            // leave a memo for the first thread processing the next block
-                            prev_block_delta = t_end - last;
-                            prev_block_fp = fp_meta;
-                        }
-                    }
-                }
-
-                if constexpr(!has_text_access) {
-                    // advance to next block
-                    done = !block.advance();
-                }
-                ++block_num;
-            } while(!done);
-
-            size_t pre_parsing_length = 0;
-            for(size_t i = 0; i < pre_parsing.size(); i++) {
-                pre_parsing_length += pre_parsing[i]->size();
-            }
-
-            size_t distinct_estimate;
-            {
-                HLLSketch sketch;
-                for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
-                    sketch.merge(*psketch[thread_num]);
-                    psketch[thread_num].reset();
-                }
-                distinct_estimate = size_t(sketch.estimate());
-            }
+            PreParsing pre_parsing;
+            auto [pre_parsing_length, distinct_estimate] = pre_parse<InputStream, has_text_access, true>(in, block_size, t, n, &pre_parsing);
 
             if constexpr(verbose_) {
                 phase.stop();
@@ -933,6 +968,11 @@ public:
         };
         NoStream no_stream;
         factorize<NoStream, true>(no_stream, 0, t, n, emit_literal, emit_copy);
+    }
+
+    template<typename InputStream>
+    auto inspect(InputStream& in, size_t const n, size_t const block_size) {
+        return pre_parse<InputStream, false, false>(in, block_size, std::string_view(), n, nullptr);
     }
 };
 
