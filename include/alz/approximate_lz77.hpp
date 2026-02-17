@@ -341,6 +341,13 @@ private:
                 std::cout << "\tdistinct metacharacters estimate: " << distinct_estimate << std::endl;
             }
 
+            if(pre_parse_callback && !pre_parse_callback(pre_parsing_length, distinct_estimate)) {
+                if constexpr(verbose_) {
+                    std::cout << "pre_parse callback returned false -- stopping" << std::endl;
+                    return;
+                }
+            }
+
             if constexpr(verbose_) {
                 std::cout << "compute distinct metacharacters ... ";
                 std::cout.flush();
@@ -894,6 +901,12 @@ public:
     ApproximateLZ77(size_t sampling, size_t fp_window)
         : sampling_(sampling), fp_window_(fp_window) {
     }
+
+    // called when the pre-parsing phase has finished
+    // the first parameter is the length of the parsing (size of the metacharacter multiset)
+    // the second parameter is the *estimated* number of distinct metacharacters (cardinality of the metacharacter multiset)
+    // if the callback returns false, the algorithm will stop immediately
+    std::function<bool(size_t, size_t)> pre_parse_callback;
 
     template<typename InputStream>
     void factorize(InputStream& in, size_t const n, size_t const block_size, lz77::EmitFunction emit_literal, lz77::EmitFunction emit_copy) {
