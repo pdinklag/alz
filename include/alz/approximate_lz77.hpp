@@ -344,8 +344,8 @@ private:
             if(pre_parse_callback && !pre_parse_callback(pre_parsing_length, distinct_estimate)) {
                 if constexpr(verbose_) {
                     std::cout << "pre_parse callback returned false -- stopping" << std::endl;
-                    return;
                 }
+                return;
             }
 
             if constexpr(verbose_) {
