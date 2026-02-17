@@ -5,3 +5,6 @@ add_executable(alz-cli alz.cpp)
 target_compile_definitions(alz-cli PRIVATE ALZ_VERBOSE)
 target_link_libraries(alz-cli PRIVATE alz cmdline pm-malloc)
 set_target_properties(alz-cli PROPERTIES OUTPUT_NAME "alz")
+
+add_executable(inspect inspect.cpp)
+target_link_libraries(inspect PRIVATE alz cmdline pm-malloc)
