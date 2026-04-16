@@ -54,6 +54,7 @@
 #include <libsais64.h>
 
 #include "internal/hll_sketch.hpp"
+#include "internal/ref.hpp"
 
 namespace alz {
 
@@ -97,64 +98,7 @@ private:
         }
     }
 
-    struct Ref {
-        Index beg, src, len;
-        Index end() const { return beg + len - 1; }
-    } __attribute__((packed));
-
-    class RefListIterator {
-    private:
-        std::unique_ptr<std::vector<Ref>> const* refs_;
-        Index num_threads_;
-
-        Index th_, pos_;
-
-        Ref const& get() const {
-            return (*refs_[th_])[pos_];
-        }
-
-        void advance() {
-            if(++pos_ >= refs_[th_]->size()) {
-                pos_ = 0;
-
-                ++th_;
-                while(th_ < num_threads_ && refs_[th_]->empty()) {
-                    ++th_;
-                }
-            }
-        }
-
-    public:
-        RefListIterator() : num_threads_(0), th_(0) {
-        }
-
-        RefListIterator(std::unique_ptr<std::vector<Ref>> const* refs, Index const num_threads) : refs_(refs), num_threads_(num_threads), th_(0), pos_(0) {
-            while(th_ < num_threads_ && refs_[th_]->empty()) {
-                ++th_;
-            }
-        }
-
-        RefListIterator(RefListIterator&&) = default;
-        RefListIterator& operator=(RefListIterator&&) = default;
-
-        RefListIterator(RefListIterator const&) = default;
-        RefListIterator& operator=(RefListIterator const&) = default;
-
-        operator bool() const { return th_ < num_threads_; }
-        Ref const& operator*() { return get(); }
-        Ref const* operator->() { return &get(); }
-
-        RefListIterator& operator++() {
-            advance();
-            return *this;
-        }
-
-        RefListIterator operator++(int) {
-            auto copy = *this;
-            advance();
-            return copy;
-        }
-    };
+    using Ref = internal::Ref<Index>;
 
     static constexpr Fingerprint rolling_fp_base_ = (1ULL << 16) - 39;
 
@@ -877,7 +821,7 @@ private:
             size_t i = 0;
 
             // FIXME: this "iterator" fails if any thread does not emit any refs
-            RefListIterator it(lrefs, num_threads);
+            typename Ref::ListIterator it(lrefs, num_threads);
             while(i < n) {
                 // advance to next reference covering position i
                 while(it && i > it->end()) {
