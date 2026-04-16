@@ -26,6 +26,9 @@
  * SOFTWARE.
  */
 
+#ifndef _ALZ_MURMUR_HASH3_HPP
+#define _ALZ_MURMUR_HASH3_HPP
+
 #include <cstdint>
 
 namespace alz::internal {
@@ -148,3 +151,5 @@ public:
 };
 
 }
+
+#endif
