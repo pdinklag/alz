@@ -23,7 +23,7 @@ CPMAddPackage("gh:IlyaGrebnov/libsais#v2.10.4")
 CPMAddPackage("gh:martinus/unordered_dense#v4.8.1")
 CPMAddPackage("gh:pdinklag/fp#v1.0.0")
 CPMAddPackage("gh:pdinklag/iopp#v1.0.0")
-CPMAddPackage("gh:pdinklag/lz77#v1.0.0")
+CPMAddPackage("gh:pdinklag/lz77#v1.0.1")
 CPMAddPackage("gh:pdinklag/pm#v1.0.0")
 
 # ALZ library
