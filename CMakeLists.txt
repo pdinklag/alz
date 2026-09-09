@@ -11,7 +11,7 @@ project(alz)
 # hard requirements
 find_package(OpenMP REQUIRED)
 
-# TODO: make TBB dependency optional
+# enable parallel sorting: requires compiler support AND the TBB library
 set(ENABLE_PARALLEL_SORT 0)
 include(CheckCXXSymbolExists)
 check_cxx_symbol_exists(__cpp_lib_parallel_algorithm "version" HAVE_CPP_LIB_PARALLEL_ALGORITHM)
