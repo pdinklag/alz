@@ -1,5 +1,5 @@
 # CLI-specific dependencies
-CPMAddPackage("gh:pdinklag/cmdline#v1.0.0")
+CPMAddPackage("gh:pdinklag/cmdline#v1.0.1")
 
 add_executable(alz-cli alz.cpp)
 target_compile_definitions(alz-cli PRIVATE ALZ_VERBOSE)
