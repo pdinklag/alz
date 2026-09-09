@@ -34,7 +34,7 @@
 
 class ALZ : public cmdline::Program {
 private:
-    static constexpr size_t MAX_SIZE_32BIT = 1ULL << 31 - 1;
+    static constexpr size_t MAX_SIZE_32BIT = (1ULL << 31) - 1;
 
     static constexpr char const* MAGIC = "ALZ";
     static constexpr size_t MAGIC_LEN = 3;
