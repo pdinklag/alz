@@ -373,7 +373,13 @@ private:
                 if constexpr(!has_text_access) {
                     if(num_threads > 1) {
                         // sort by position of occurrence - be friendly to load metacharacters... :-)
-                        std::sort(std::execution::par_unseq, pre_meta.begin(), pre_meta.end(), [](Metachar const& a, Metachar const& b){ return a.occ < b.occ; });
+                        #ifdef ALZ_PARALLEL_SORT_ENABLED
+                        std::sort(std::execution::par_unseq,
+                        #else
+                        std::sort(
+                        #endif
+                            pre_meta.begin(), pre_meta.end(), [](Metachar const& a, Metachar const& b){ return a.occ < b.occ; }
+                        );
                     }
                 }
 
@@ -471,26 +477,36 @@ private:
 
                 if constexpr(has_text_access) {
                     // sort by accessing the text
-                    std::sort(std::execution::par_unseq, meta_order.get(), meta_order.get() + sigma, [&](MIndex const a, MIndex const b){
-                        auto const la = pre_meta[a].len;
-                        size_t pa = pre_meta[a].occ;
+                    #ifdef ALZ_PARALLEL_SORT_ENABLED
+                    std::sort(std::execution::par_unseq,
+                    #else
+                    std::sort(
+                    #endif
+                        meta_order.get(), meta_order.get() + sigma, [&](MIndex const a, MIndex const b){
+                            auto const la = pre_meta[a].len;
+                            size_t pa = pre_meta[a].occ;
 
-                        auto const lb = pre_meta[a].len;
-                        size_t pb = pre_meta[b].occ;
+                            auto const lb = pre_meta[a].len;
+                            size_t pb = pre_meta[b].occ;
 
-                        return std::string_view(t.data() + pa, la).compare(std::string_view(t.data() + pb, lb)) < 0;
-                    });
+                            return std::string_view(t.data() + pa, la).compare(std::string_view(t.data() + pb, lb)) < 0;
+                        });
                 } else {
                     // sort by accessing the buffer
-                    std::sort(std::execution::par_unseq, meta_order.get(), meta_order.get() + sigma, [&](MIndex const a, MIndex const b){
-                        auto const la = pre_meta[a].len;
-                        char const* pa = meta_buf.get() + meta_ptr[a];
+                    #ifdef ALZ_PARALLEL_SORT_ENABLED
+                    std::sort(std::execution::par_unseq,
+                    #else
+                    std::sort(
+                    #endif
+                        meta_order.get(), meta_order.get() + sigma, [&](MIndex const a, MIndex const b){
+                            auto const la = pre_meta[a].len;
+                            char const* pa = meta_buf.get() + meta_ptr[a];
 
-                        auto const lb = pre_meta[b].len;
-                        char const* pb = meta_buf.get() + meta_ptr[b];
+                            auto const lb = pre_meta[b].len;
+                            char const* pb = meta_buf.get() + meta_ptr[b];
 
-                        return std::string_view(pa, la).compare(std::string_view(pb, lb)) < 0;
-                    });
+                            return std::string_view(pa, la).compare(std::string_view(pb, lb)) < 0;
+                        });
                 }
             }
 

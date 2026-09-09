@@ -12,8 +12,24 @@ project(alz)
 find_package(OpenMP REQUIRED)
 
 # TODO: make TBB dependency optional
-list(APPEND CMAKE_MODULE_PATH "deps/tbb/cmake/")
-find_package(TBB REQUIRED)
+set(ENABLE_PARALLEL_SORT 0)
+include(CheckCXXSymbolExists)
+check_cxx_symbol_exists(__cpp_lib_parallel_algorithm "version" HAVE_CPP_LIB_PARALLEL_ALGORITHM)
+if(HAVE_CPP_LIB_PARALLEL_ALGORITHM)
+  # the compiler supports parallel execution policies
+  # make sure TBB is installed
+  list(APPEND CMAKE_MODULE_PATH "deps/tbb/cmake/")
+  find_package(TBB)
+  if(TBB_FOUND)
+    set(TBB_LIBRARY "tbb")
+    set(ENABLE_PARALLEL_SORT 1 FORCE)
+  else()
+    message("TBB library not found -- parallel sorting is disabled.")
+  endif()
+else()
+  message("The compiler does not support parallel execution policies (__cpp_lib_parallel_algorithm not set) -- parallel sorting is disabled.")
+  set(TBB_LIBRARY "")
+endif()
 
 # set C++ build flags
 set(CMAKE_CXX_STANDARD 23)
@@ -38,7 +54,11 @@ CPMAddPackage("gh:pdinklag/pm#v1.0.1")
 # ALZ library
 add_library(alz INTERFACE)
 target_include_directories(alz INTERFACE ${libsais_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(alz INTERFACE fp iopp lz77 libsais pm tbb unordered_dense)
+target_link_libraries(alz INTERFACE fp iopp lz77 libsais pm ${TBB_LIBRARY} unordered_dense)
+
+if(ENABLE_PARALLEL_SORT)
+  target_compile_definitions(alz INTERFACE ALZ_PARALLEL_SORT_ENABLED)
+endif()
 
 # provide command-line tool if standalone
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
