@@ -28,6 +28,7 @@
 #include <cmdline/program.hpp>
 #include <iopp/load_file.hpp>
 
+#define ALZ_CARDINALITY_CALLBACK_ENABLED
 #include <alz/approximate_lz77.hpp>
 
 class ALZInspect : public cmdline::Program {

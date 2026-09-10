@@ -53,8 +53,11 @@
 #include <libsais.h>
 #include <libsais64.h>
 
-#include "internal/hll_sketch.hpp"
 #include "internal/ref.hpp"
+
+#ifdef ALZ_CARDINALITY_CALLBACK_ENABLED
+#include "internal/hll_sketch.hpp"
+#endif
 
 namespace alz {
 
@@ -75,7 +78,10 @@ private:
     using RK64 = fp::RabinKarp61;
     using Fingerprint = RK::Fingerprint;
     using Fingerprint64 = RK64::Fingerprint;
+
+    #ifdef ALZ_CARDINALITY_CALLBACK_ENABLED
     using HLLSketch = internal::HLLSketch<16>;
+    #endif
 
     using MIndex = uint32_t; // nb: we generally assume that we won't ever have more than 4G metacharacters...
     using MLength = uint32_t;
@@ -113,7 +119,10 @@ private:
         size_t const s = (1ULL << sampling_) - 1;
 
         auto& pre_parsing = *ppre_parsing;         // used only if store == true
-        size_t pre_parsing_size[num_threads] = {}; // used only if store == false
+        auto pre_parsing_size = std::make_unique<size_t[]>(num_threads); // used only if store == false
+        for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
+            pre_parsing_size[thread_num] = 0;
+        }
 
         RK rk_trigger(rolling_fp_base_, fp_window_);
         RK64 rk_meta(rolling_fp_base_);
@@ -133,10 +142,12 @@ private:
         }
 
         // sketch
-        std::unique_ptr<HLLSketch> psketch[num_threads];
+        #ifdef ALZ_CARDINALITY_CALLBACK_ENABLED
+        auto psketch = std::make_unique<std::unique_ptr<HLLSketch>[]>(num_threads);
         for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
             psketch[thread_num] = std::make_unique<HLLSketch>();
         }
+        #endif
 
         // when the last thread reaches the end of a block (not the last) and has not yet found a trigger string,
         // it leaves this delta for the first thread processing the next block
@@ -158,7 +169,9 @@ private:
             {
                 Index const thread_num = omp_get_thread_num();
 
+                #ifdef ALZ_CARDINALITY_CALLBACK_ENABLED
                 auto& local_sketch = *psketch[thread_num];
+                #endif
 
                 auto* local_pre_parsing = store ? pre_parsing[pre_parsing_offs + thread_num].get() : nullptr;
                 if constexpr(store) {
@@ -221,7 +234,10 @@ private:
                             } else {
                                 ++local_count;
                             }
+
+                            #ifdef ALZ_CARDINALITY_CALLBACK_ENABLED
                             local_sketch.push(fp_meta);
+                            #endif
                         }
 
                         last = p - fp_window_;
@@ -277,6 +293,7 @@ private:
             }
         }
 
+        #ifdef ALZ_CARDINALITY_CALLBACK_ENABLED
         size_t distinct_estimate;
         {
             HLLSketch sketch;
@@ -288,6 +305,9 @@ private:
         }
 
         return std::make_pair(pre_parsing_length, distinct_estimate);
+        #else
+        return std::make_pair(pre_parsing_length, 0);
+        #endif
     }
 
     template<typename InputStream, bool has_text_access>
@@ -317,15 +337,20 @@ private:
                 phase.stop();
                 std::cout << "(" << (size_t)phase.get_metric<pm::Stopwatch::ElapsedTimeMillisMetric>() << "ms, peak mem " << phase.get_metric<pm::MallocCounter::MemoryPeakMetric>() << ")" << std::endl;
                 std::cout << "\tpreliminary parsing length: " << pre_parsing_length << std::endl;
+
+                #ifdef ALZ_CARDINALITY_CALLBACK_ENABLED
                 std::cout << "\tdistinct metacharacters estimate: " << distinct_estimate << std::endl;
+                #endif
             }
 
+            #ifdef ALZ_CARDINALITY_CALLBACK_ENABLED
             if(pre_parse_callback && !pre_parse_callback(pre_parsing_length, distinct_estimate)) {
                 if constexpr(verbose_) {
                     std::cout << "pre_parse callback returned false -- stopping" << std::endl;
                 }
                 return;
             }
+            #endif
 
             if constexpr(verbose_) {
                 std::cout << "compute distinct metacharacters ... ";
@@ -897,11 +922,13 @@ public:
         : sampling_(sampling), fp_window_(fp_window) {
     }
 
+    #ifdef ALZ_CARDINALITY_CALLBACK_ENABLED
     // called when the pre-parsing phase has finished
     // the first parameter is the length of the parsing (size of the metacharacter multiset)
     // the second parameter is the *estimated* number of distinct metacharacters (cardinality of the metacharacter multiset)
     // if the callback returns false, the algorithm will stop immediately
     std::function<bool(size_t, size_t)> pre_parse_callback;
+    #endif
 
     template<typename InputStream>
     void factorize(InputStream& in, size_t const n, size_t const block_size, lz77::EmitFunction emit_literal, lz77::EmitFunction emit_copy) {
