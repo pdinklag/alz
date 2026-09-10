@@ -332,7 +332,7 @@ private:
                 // parallel implementation
                 
                 // we first build p independent maps
-                std::unique_ptr<MMap> lmap[num_threads];
+                auto lmap = std::make_unique<std::unique_ptr<MMap>[]>(num_threads);
                 for(size_t thread_num = 0; thread_num < num_threads; thread_num++) {
                     lmap[thread_num] = std::make_unique<MMap>();
                 }
@@ -617,7 +617,7 @@ private:
         }
 
         // factorize
-        std::unique_ptr<std::vector<Ref>> lrefs[num_threads];
+        auto lrefs = std::make_unique<std::unique_ptr<std::vector<Ref>>[]>(num_threads);
         for(size_t x = 0; x < num_threads; x++) {
             lrefs[x] = std::make_unique<std::vector<Ref>>();
         }
@@ -828,7 +828,7 @@ private:
             size_t i = 0;
 
             // FIXME: this "iterator" fails if any thread does not emit any refs
-            RefListIterator it(lrefs, num_threads);
+            RefListIterator it(lrefs.get(), num_threads);
             while(i < n) {
                 // advance to next reference covering position i
                 while(it && i > it->end()) {
